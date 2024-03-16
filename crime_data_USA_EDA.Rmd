@@ -1,0 +1,454 @@
+---
+title: "Przestępczość w 21 Amerykańskich Miastach (2016-2020) EDA"
+author: "Katarzyna Wróbel"
+date: "2023-11-30"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: yes
+
+---
+
+# Wprowadzenie
+
+Zbiór danych zawiera ponad 10 milionów wpisów z pakietu `crimedata`. Każdy wpis reprezentuje przestępstwo i jego okoliczności.
+
+Ja w mojej pracy zajmuję się przestępstwami przeciwko innym ludziom. Rozważam dane z 21 amerykańskich miast w latach 2016-2020.
+
+W swojej pracy przyglądam się kwestii przestępczości.Badam kwestię bezpieczeczeństwa obywateli i turystów. Po lekturze mojej pracy czytelnik dowie się, kiedy jest szczególnie niebezpiecznie w USA, w którym mieście przestępczość jest największa, w jakich porach doby powinniśmy szczególnie na siebie uważać, jaka jest zależność między rodzajem popełnianego przestępstwa, a typem lokalizacji oraz jakie przestępstwo jest najczęściej popełniane w USA. Ponadto przyjrzymy się dokładniej sytuacji w Nowym Yorku.
+
+## Zmienne
+
+- **uid** (liczbowo) Klucz przestępstwa
+- **city_name** (faktor) Nazwa miasta
+- **offense_code** (factor) Kod wykroczenia
+- **offense_type** (factor) Typ wykroczenia
+- **offense_group** (factor) Grupa wykroczenia
+- **offense_against**(factor) Grupa przeciwko której popełniono przestępstwo
+- **date_single** (data z godziną) Data wykroczenia
+- **longitude** (liczbowo) Szerokość geograficzna
+- **latitude** (liczbowo) Wysokość geograficzna
+- **census_block** (tekstowo) Blok spisu ludności
+
+
+# Przygotowanie danych
+
+## Pakiety, których używam:
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library("crimedata")
+library("tidyr")
+library("gapminder")
+library("dplyr")
+library("mice")
+library("ggplot2")
+library("knitr")
+library("pheatmap")
+library("leaflet")
+library("leaflet.extras")
+```
+
+## Otwieram plik
+W mojej pracy będę używać danych z pakietu `crimedata`, pobrałam interesujące mnie dane:
+```{r}
+crimes <- readRDS("C:\\Users\\48794\\Documents\\AGH\\2rok\\R\\crimes_data.rds")
+```
+Oglądam moje dane.
+```{r}
+head(crimes, 5)
+tail(crimes, 5)
+```
+Z tej ramki danych, interesują mnie przestępstwa popełniane przeciwko ludziom.
+```{r}
+persons_crimes <- crimes %>%
+  filter (offense_against == "persons")
+```
+Przed sprawdzeniem typów danych i braków danych, tworzę trzy nowe kolumny: `year`, `month`, `hour`. Będę ich używać w późniejszej analizie.
+```{r}
+persons_crimes$year <- format(persons_crimes$date_single, "%Y")
+persons_crimes$month <- format(persons_crimes$date_single, "%m")
+persons_crimes$hour <- format(persons_crimes$date_single, "%H")
+```
+Sprawdzę teraz typ moich danych.
+```{r}
+str(persons_crimes)
+```
+Wygląda to prawie w porządku, muszę zmienić tylko typ danych w kolumnach `year`, `month` i `hour` na typ numeryczny.
+```{r}
+persons_crimes$year <- as.numeric(persons_crimes$year)
+persons_crimes$month <- as.numeric(persons_crimes$month)
+persons_crimes$hour <- as.numeric(persons_crimes$hour)
+```
+Teraz wszystko jest w porządku, zajmijmy się brakami w danych.
+
+## Braki danych
+Sprawdzam, w której kategorii i w jakiej ilości występują braki danych:
+```{r}
+md.pattern(persons_crimes)
+```
+Bardzo dużo braków występuje w kolumnach: `date_start`, `date_end`. Usuwam te kolumny.
+```{r}
+persons_crimes <- persons_crimes %>%
+  select (-date_start, -date_end)
+```
+Zajmijmy się zmienną `date_single` - braków jest stosunkowo mało. Funkcja `fill` wypełnia brakujące wartości, używając ostatniej dostępnej wartości. Analogicznie postępuję z kolumnami `year`, `month`, `hour`.
+```{r}
+persons_crimes <- persons_crimes %>% fill(date_single, year, month, hour)
+```
+Mam dużo braków w `location_category` oraz `location_type`. Zamieniam je na `other`.
+```{r}
+persons_crimes$location_category[which(is.na(persons_crimes$location_category))] = "other"
+persons_crimes$location_type[which(is.na(persons_crimes$location_type))] = "other"
+```
+
+Ponadto usuwam kolumnę `census_block`, gdyż nie będę używać jej w swojej pracy.
+```{r}
+persons_crimes <- persons_crimes %>%
+  select (-census_block)
+```
+
+Ze względu na specyfikę i typ moich danych, **nie mam w zestawie danych wartości odstających**. 
+
+Możemy przejść do pracy.
+
+# Praca na danych
+
+## Skala zjawiska
+W mojej pracy zajmuję się przestępstwami popełnianymi przeciwko ludziom w USA. Aby mieć lepszy obraz sytuacji, sprawdźmy, jak dużą część wszystkich przestępstw stanowią przestępstwa przeciwko ludziom.
+```{r}
+#Podliczam ile jest rekordów w każdej z kategorii `offense_against`
+crimes_data <- crimes %>%
+  group_by(offense_against) %>%
+  summarise(number = n())
+
+ggplot(crimes_data, aes(x = "", y = number, fill = offense_against)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  theme_void() +
+  labs(title = "Liczba przestępstw według rodzaju",
+       fill = "Rodzaj przestępstwa",
+       x = NULL,
+       y = NULL) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+<br />
+Widzimy, że mówimy o **mniejszości**, co na swój sposób jest pocieszającą wiadomością. Sprawdźmy jak to dokładnie wygląda w liczbach:
+```{r}
+sum_number_of_crimes <- sum(crimes_data$number)
+
+crimes_data <- crimes_data %>%
+  mutate(percent = number*100/sum_number_of_crimes)
+
+kable(crimes_data)
+```
+Utwierdziliśmy się w naszych wcześniejszych przekonaniach - **najwięcej jest przestępstw przeciwko własności**, stanowią one ponad połowę wszystkich popełnianych przestępstw. Przestępstwa przeciwko ludziom są **drugie pod względem częstości występowania**.
+
+## Zmienność w czasie
+
+Rozważamy dane od 2016 do 2020, Sprawdźmy, jak zmieniała się liczba przestępstw rocznie na przestrzeni tych lat.
+
+```{r message=FALSE, warning=FALSE}
+crimes_year <- persons_crimes %>%
+  group_by(year) %>%
+  summarise(number_in_thousands = n()/1000)
+
+ggplot(crimes_year, aes(x = year, y = number_in_thousands)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +  # Dopasowuje linię trendu
+  labs(title = "Liczba przestępstw w czasie",
+       y = "Liczba przestępstw w tysiącach",
+       x = "Data") +
+  coord_cartesian(ylim = c(0, max(crimes_year$number_in_thousands))) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+<br>
+Widzimy niestety, że liczba przestępstw ma **tendencję rosnącą**, a **2019** jest rokiem, w którym przestępstw przeciwko ludziom było najwięcej.
+
+Przyjrzyjmy się jeszcze statystykom opisowym, aby zobaczyć, jak wyglądała miesięczna liczba przestępstw w każdym roku.
+```{r}
+persons_crimes$year_and_month <- paste(persons_crimes$year, persons_crimes$month, sep = "-")
+#Tworze nowa kolumne
+
+persons_date <- persons_crimes %>%
+  group_by(year_and_month) %>%
+  summarise(number = n()/1000)
+
+persons_date$date <- as.Date(paste0(persons_date$year_and_month, "-01"), format = "%Y-%m-%d")
+#Ta kolumna jest mi potrzebna do narysowania poźniejszego wykresu
+
+persons_date$year <- format(persons_date$date, '%Y')
+
+data_by_year <-persons_date %>%
+  group_by(year) %>%
+  summarise(
+    Mean = mean(number),
+    Median = median(number),
+    SD = sd(number),
+    Min = min(number),
+    Max = max(number)
+  )
+
+kable(data_by_year)
+```
+
+<br>
+Średnia miesięczna liczba przestępstw wydaje się **rosnąć** z roku na rok, osiągając najwyższą wartość w **2019** roku, a następnie malejąc nieznacznie w 2020 roku. Wzrost odchylenia standardowego odzwierciedla **większą zmienność** w liczbie przestępstw na przestrzeni lat. Zakres (różnica między Min a Max) również rośnie z roku na rok, co wskazuje na **zwiększoną zmienność między miesiącami** w kolejnych latach.
+
+## Najniebezpieczniejszy miesiąc
+Wiemy już, że liczba przestępstw wzrasta, spójrzmy, czy któryś z miesięcy jest szczególnie niebezpiecznym.
+```{r}
+ggplot(persons_date, aes(x = date, y = number)) +
+geom_line(stat = "identity") +
+  labs(title = "Liczba przestępstw w miesiącu",
+       y = "Liczba przestępstw",
+       x = "Data") +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+<br>
+
+Widzimy, że są miesiące, które szczególnie sprzyjają przestępczości.
+Sprawdźmy, które miesiące są najniebezpieczniejsze - kiedy przestępstw jest najwięcej.
+```{r}
+persons_month <- persons_crimes %>%
+  group_by(month) %>%
+  summarise(number = n()/1000)
+
+persons_month$name_of_month <- c("January","February","March","April","May","June", "July", "August", "September", "October", "November", "December")
+
+persons_month$month3 <- substr(persons_month$name_of_month, start = 1, stop = 3) %>% toupper()
+
+ggplot(persons_month, aes(x = reorder(month3, month), y = number, 
+                          color = "darkblue", fill = "lightblue")) +
+geom_bar(stat = "identity") +
+labs(title = "Liczba przestępstw w czasie",
+      y = "Liczba przestępstw w tysiącach",
+      x = "Miesiac") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5),
+      legend.position = "none")+ 
+  scale_fill_manual(values = c("lightblue" = "lightblue")) +
+  scale_color_manual(values = c("darkblue" = "darkblue"))
+```
+<br>
+Z wykresu wynika, że najwięcej przestępstw jest popełnianych w **maju** i **lipcu**, sprawdźmy, który z miesięcy był najniebezpieczniejszy.
+```{r}
+persons_month[persons_month$number == max(persons_month$number),]
+```
+**Lipiec** jest miesiącem z największą liczbą przestępstw.
+
+Z historycznego punktu widzenia:
+```{r}
+persons_date[persons_date$number == max(persons_date$number),]
+```
+**Lipiec 2019 roku** był do tej pory najbardziej niebezpieczny.
+
+
+## Miasta, których lepiej unikać
+Sprawdźmy, w którym mieście przestępstw jest najwięcej.
+```{r}
+crimes_in_city <- persons_crimes %>%
+  group_by(city_name) %>%
+  summarise(number_of_crimes_in_thousands = n()/1000) %>%
+  arrange(desc(number_of_crimes_in_thousands))
+
+ggplot(crimes_in_city, aes(y = reorder(city_name, number_of_crimes_in_thousands), x = number_of_crimes_in_thousands, fill = "darkblue")) +
+  geom_bar(stat = "identity") +
+  labs(title = "Liczba przestępstw w poszczególnych miastach",
+       x = "Liczba przestępstw w tysiącach",
+       y = "Miasto") +
+  theme(plot.title = element_text(hjust = 0.5),
+      legend.position = "none")+ 
+  scale_fill_manual(values = c("darkblue" = "darkblue"))
+```
+<br>
+Z wykresu jasno widać - to **Nowy York** jest miastem, w którym przestępstw jest najwięcej. Jednakże pamiętajmy, że Nowy York jest też miastem największym. Lepiej jest więc porównywać bezpieczeństwo w miastach na podstawie uniwersalnego współczynnika przestępczości, który mówi nam, ile osób na 1000 to ofiary przestępstwa.
+
+Sprawdźmy jeszcze statystyki opisowe.
+```{r}
+summary(crimes_in_city$number_of_crimes_in_thousands)
+sd(crimes_in_city$number_of_crimes_in_thousands)
+wsp_zmienności <- (sd(crimes_in_city$number_of_crimes_in_thousands)/mean(crimes_in_city$number_of_crimes_in_thousands))
+wsp_zmienności
+```
+
+Na podstawie statystyk opisowych możemy stwierdzić, że większość miast ma niską liczbę przestępstw, jednak istnieje kilka miast, które charakteryzują się znacznie wyższą liczbą przestępstw. Stwierdzamy to ze względu na asymetrię prawostronną. Wartość współczynnika zmienności mówi nam o dużym zróżnicowaniu danych.
+
+## Współczynnik przestępczości
+Spójrzmy, jak wygląda liczba przestępców na liczbę mieszkańców - biorę średnią liczbę mieszkańców z badanego okresu z każdego badanego miasta.
+```{r}
+population <- c(8773, 2742, 3849, 631, 508, 638, 2288, 693, 964, 543, 815, 733, 674, 301, 877, 632, 923, 506, 459, 429, 480)
+
+crimes_in_city$population_in_thousands <- population 
+
+crimes_in_city$crime_rate <- crimes_in_city$number_of_crimes_in_thousands*1000/(5*crimes_in_city$population_in_thousands)
+
+ggplot(crimes_in_city, aes(y = reorder(city_name, crime_rate), x = crime_rate,
+                           fill = "darkblue")) +
+  geom_bar(stat = "identity") +
+  labs(title = "Współczynnik przestępczości w poszczególnych miastach",
+       x = "Wartość współczynnika przestępczości",
+       y = "Miasto") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")+ 
+  scale_fill_manual(values = c("darkblue" = "darkblue"))
+```
+<br>
+Największą wartość współczynnika widzimy w mieście **Kansas City**, gdzie ponad 50 osób na 1000 to ofiary przestępstwa.
+
+Dokładne dane prezentują się następująco:
+```{r}
+kable(crimes_in_city)
+```
+
+## Czy za dnia jest bezpieczniej?
+Często słyszymy o tym, że musimy szczególnie uważać podczas nocnych spacerów, że noc jest czasem niebezpiecznym. Sprawdźmy, czy rzeczywiście przestępstwa mają przede wszystkim miejsce w nocy. W moich rozważaniach przyjmuję noc jako czas od 22 do 6.
+
+Przedstawię, jaki procent stanowią przestępstwa wykonywane nocą dla każdego rodzaju przestępstw.
+```{r}
+persons_crimes$time_of_day <- ifelse(persons_crimes$hour <= 6 | persons_crimes$hour >= 22, "Night", "Day")
+
+crimes_type <- persons_crimes %>%
+  group_by(offense_type) %>%
+  summarise(
+    number_of_crimes = n(),
+    percents_of_crimes_during_night = sum(time_of_day == "Night")*100 / n()
+  )
+
+ggplot(crimes_type, aes(y = reorder(offense_type, percents_of_crimes_during_night), x = percents_of_crimes_during_night)) +
+  geom_point(size = 2) +
+  labs(title = "Procent przestępstw popełnianych w noc",
+       x = "Procent przestępstw w nocy",
+       y = "Rodzaj przestępstwa") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+<br>
+Dane mówią jasno - przestępcy **nie są szczególnie aktywni nocą**. W większości kategorii to w ciągu dnia popełnia się najwięcej przestępstw.
+
+## Czy istnieje zależność pomiędzy miejscem a rodzajem przestępstwa
+
+W celu odpowiedzenia na pytanie z tytułu przeprowadzę test chi kwadrat.
+<br>*Hipoteza główna: Zmienne są niezależne*
+<br>*Hipoteza alternatywna: Zmienne nie są niezależne*
+```{r}
+tabela_chi_kwadrat <- table(persons_crimes$offense_group, persons_crimes$location_category)
+tabela_chi_kwadrat <- tabela_chi_kwadrat[rowSums(tabela_chi_kwadrat != 0) > 0, ] #usuwamy wiersze z samymi zerami
+```
+```{r echo=FALSE}
+tabela_chi_kwadrat <- tabela_chi_kwadrat[-1, ]
+tabela_chi_kwadrat <- tabela_chi_kwadrat[-nrow(tabela_chi_kwadrat), ]
+tabela_chi_kwadrat <- tabela_chi_kwadrat[,-(ncol(tabela_chi_kwadrat)-1)]
+```
+```{r}
+result_test_chi_kwadrat <- chisq.test(tabela_chi_kwadrat)
+result_test_chi_kwadrat$p.value
+```
+I w tym momencie możemy stwierdzić, że niezależnie od przyjętego poziomu istotności odrzucamy hipotezę główną. **Zmienne nie są niezależne**.
+
+Spójrzmy jak bardzo zmienne są zależne za pomocą V-Cramera.
+```{r}
+cramers_v <- sqrt(result_test_chi_kwadrat$statistic / sum(result_test_chi_kwadrat$observed) * (min(nrow(tabela_chi_kwadrat), ncol(tabela_chi_kwadrat)) - 1))
+cramers_v
+```
+Mówimy o **średniej zależnośc**i, którą będziemy dokładniej oglądać za chwilę. 
+
+Aby lepiej poznać sytuację spoglądam jeszcze:
+```{r}
+result_test_chi_kwadrat$statistic
+result_test_chi_kwadrat$observed
+result_test_chi_kwadrat$expected
+```
+Widzimy, że istnieje zależność pomiędzy rodzajem popełnianego przestępstwa, a lokalizacją, spróbujmy znaleźć tę zależność, a posłuży mi do tego mapa ciepła.
+
+## Zależność pomiędzy miejscem a rodzajem przestępstwa
+Dokonuję normalizacji danych, poprzez przekształcenie liczby przypadków przestępstw na proporcje względne, co umożliwia porównywanie wzorców zależności między zmiennymi kategorycznymi niezależnie od różnic w ogólnej liczbie przypadków, co ułatwia interpretację i porównanie zależności statystycznych.
+```{r}
+row_normalized_table <- prop.table(tabela_chi_kwadrat, margin = 1) #normalizuję dane
+  
+pheatmap(
+  row_normalized_table,
+  color = colorRampPalette(c("white", "red"))(20),
+  main = 'Typ przestępstwa a lokalizacja (znormalizowane)',
+  fontsize = 10,
+  border_color = 'black',
+  cellwidth = 15,
+  cellheight = 15
+  )
+```
+<br>
+Na podstawie wykresu mogę wysunąć wnioski: 
+
+- Przestępstwa seksualne mają wyższe prawdopodobieństwo wystąpienia w kategoriach "leisure" (rozrywka) i "residence" (miejsce zamieszkania).
+- Przestępstwa związane z handlem ludźmi są bardziej prawdopodobne w miejscach oznaczonych jako "hotel" oraz "other" (inne).
+- "Government" (instytucje rządowe) mają niskie ryzyko większości rodzajów przestępstw.
+- Miejsca zamieszkania ("residence") są bardziej narażone na różne rodzaje przestępstw, zwłaszcza przestępstwa typu "assault" (napad) i "sex offenses" (przestępstwa seksualne).
+- "Street" (ulice) są bardziej narażone na "assault offenses" (napady) i "vehicle" (przestępstwa związane z pojazdami).
+- "Homicide offenses" (przestępstwa zabójstwa) są stosunkowo niskie we wszystkich kategoriach miejscowych, z wyjątkiem "other" (inne).
+
+## Najpopularniejsze przestępstwo
+Zastanówmy się teraz, która kategoria przestępstw jest najczęściej występującą. Spójrzmy na wykres:
+```{r}
+crimes_type <- persons_crimes %>%
+  group_by(offense_group) %>%
+  summarise(number_of_crimes = n()/1000)
+  
+ggplot(crimes_type, aes(y = reorder(offense_group, number_of_crimes), x = number_of_crimes,
+                        fill = "darkblue")) +
+  geom_bar(stat = "identity") +
+  labs(title = "Liczba przestępstw z poszególnych kategorii",
+      x = "Liczba przestępstw w tysiącach",
+      y = "Kategoria przestępstwa") +
+  theme(plot.title = element_text(hjust = 0.5),
+      legend.position = "none")+ 
+  scale_fill_manual(values = c("darkblue" = "darkblue"))
+```
+
+<br>
+Nie mamy żadnych wątpliwości - najczęściej obserwujemy **napaście**, później **przestępstwa na tle seksualnym**, a później - **porwania**. Najrzadziej zdarzają się **podpalenia**.
+
+<br>
+Spójrzmy teraz na to bardziej szczegółowo:
+```{r}
+crimes_type <- persons_crimes %>%
+  group_by(offense_type) %>%
+  summarise(number_of_crimes = n()/1000)
+  
+ggplot(crimes_type, aes(y = reorder(offense_type, number_of_crimes), x = number_of_crimes,
+                        fill = "darkblue")) +
+  geom_bar(stat = "identity") +
+  labs(title = "Liczba przestępstw z poszczególnych kategorii",
+      x = "Liczba przestępstw w tysiącach",
+      y = "Kategoria przestępstwa") +
+  theme(plot.title = element_text(hjust = 0.5),
+      legend.position = "none")+ 
+  scale_fill_manual(values = c("darkblue" = "darkblue"))
+```
+<br>
+**Simple assault** (atak prosty) jest najczęstszym rodzajem przestępstwa, z liczbą przypadków przekraczającą milion. **Aggravated assault** (zaostrzony) również występuje bardzo często, z ponad 587 000 przypadkami.
+
+## Sytuacja w Nowym Yorku
+
+Nowy York kojarzy nam się jako miasto bardzo rozwinięte, Z dużą liczbą mieszkańców, kolorowymi reklamami i wysokimi budynkami. Dla wielu z nas odwiedzenie tego miasta jest marzeniem podróżniczym. Zauważyliśmy w poprzednich rozważaniach, że Nowy York jest miastem z największą liczbą przestępstw. Sprawdźmy, gdzie w Nowym Yorku jest najbezpieczniej.
+```{r}
+persons_crimes_geo <- persons_crimes %>%
+  filter(city_name == "New York") %>%
+  select(uid, longitude, latitude)
+
+leaflet(persons_crimes_geo) %>%
+  addTiles() %>%
+  addHeatmap(
+    lat = ~latitude,
+    lng = ~longitude,
+    blur = 20,
+    radius = 10
+  )
+```
+<br>
+Widzimy jasno - żadna część tego miasta nie jest bez skazy i tak naprawdę wszędzie trzeba uważać na siebie. Obszary o intensywniejszym kolorze na heatmapie wskazują na obszary o wyższym zagęszczeniu przestępczości.
+
+
+# Podsumowanie
+Analiza ukazuje, że mimo rosnącej tendencji przestępczości w ostatnich latach, przestępstwa przeciwko ludziom stanowią mniejszość w porównaniu do przestępstw przeciwko własności. Nowy York wyróżnia się największą liczbą przestępstw, a Kansas City jest miastem z największą liczbą przestępstw w przeliczeniu na 1000 mieszkańców. Powinniśmy uważać na siebie o każdej porze doby, a lipiec okazał się miesiącem, gdzie liczba popełnianych przestępstw jest największa.  Zależności między rodzajem przestępstwa a miejscem jego popełnienia są zauważalne, a analiza danych geograficznych dla Nowego Jorku ukazuje, że bezpieczne obszary są relatywnie rzadkie. Analiza wykazała, że atak prosty (simple assault) jest bezkonkurencyjnie najczęściej występującym rodzajem przestępstwa, przekraczającym liczbę miliona przypadków. Zrozumienie i skuteczne zarządzanie tymi zjawiskami może przyczynić się do poprawy ogólnego bezpieczeństwa społeczeństwa.
